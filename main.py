@@ -1,13 +1,36 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from beanie import PydanticObjectId
+from pydantic import BaseModel, EmailStr
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from auth import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    decode_access_token,
+)
+from models import User, FoodItem
+from database import init_db
 from typing import List
+from datetime import datetime
+
+
+class FoodInput(BaseModel):
+    name: str
+    calories: int
+
 
 app = FastAPI()
 
-# Enable CORS for frontend access
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_index():
+    with open("index.html", "r") as f:
+        return HTMLResponse(content=f.read(), status_code=200)
+
+
+# Allow frontend access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,80 +39,63 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve static files (CSS, JS, etc.)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
-# Data model for a food item
-class FoodItem(BaseModel):
-    name: str
-    calories: int
 
-# Data model for calorie tracking
-class CalorieData(BaseModel):
-    target: int = 0
-    foods: List[FoodItem] = []
-    totalCalories: int = 0
+@app.on_event("startup")
+async def app_init():
+    await init_db()
 
-# In-memory database for calorie data
-calorie_data = CalorieData()
 
-# Serve the frontend HTML file
-@app.get("/", response_class=HTMLResponse)
-def serve_frontend():
-    with open("index.html", "r") as file:
-        return HTMLResponse(content=file.read())
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    user_id = decode_access_token(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user = await User.get(PydanticObjectId(user_id))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
-# Set the daily calorie target
-@app.post("/calories/target")
-def set_calorie_target(target: int):
-    calorie_data.target = target
-    return {"message": "Calorie target set", "target": target}
 
-# Log a new food item
-@app.post("/calories/log")
-def log_food(food: FoodItem):
-    calorie_data.foods.append(food)
-    calorie_data.totalCalories += food.calories
-    return {"message": "Food logged", "food": food}
+@app.post("/signup")
+async def signup(email: EmailStr = Body(...), password: str = Body(...)):
+    if await User.find_one(User.email == email):
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user = User(email=email, hashed_password=hash_password(password))
+    await user.insert()
+    return {"message": "User created successfully"}
 
-# Update an existing food item
-@app.put("/calories/log/{food_id}")
-def update_food(food_id: int, updated_food: FoodItem):
-    if food_id < 0 or food_id >= len(calorie_data.foods):
-        raise HTTPException(status_code=404, detail="Food item not found")
-    
-    # Subtract the old calories before updating
-    calorie_data.totalCalories -= calorie_data.foods[food_id].calories
-    
-    # Update the food item
-    calorie_data.foods[food_id] = updated_food
-    
-    # Add the new calories
-    calorie_data.totalCalories += updated_food.calories
-    
-    return {"message": "Food updated", "food": updated_food}
 
-# Delete a food item
-@app.delete("/calories/log/{food_id}")
-def delete_food(food_id: int):
-    if food_id < 0 or food_id >= len(calorie_data.foods):
-        raise HTTPException(status_code=404, detail="Food item not found")
-    
-    # Subtract the calories of the deleted food item
-    deleted_food = calorie_data.foods.pop(food_id)
-    calorie_data.totalCalories -= deleted_food.calories
-    
-    return {"message": "Food deleted", "food": deleted_food}
+@app.post("/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = await User.find_one(User.email == form_data.username)
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_access_token({"sub": str(user.id)})
+    return {"access_token": token, "token_type": "bearer"}
 
-# Retrieve all calorie data
-@app.get("/calories/")
-def get_calories():
-    return calorie_data
 
-# Reset all calorie data
-@app.delete("/calories/reset")
-def reset_calories():
-    calorie_data.target = 0
-    calorie_data.foods = []
-    calorie_data.totalCalories = 0
-    return {"message": "Calorie data reset"}
+@app.post("/food")
+async def log_food(food: FoodInput, user: User = Depends(get_current_user)):
+    food_doc = FoodItem(
+        user_id=str(user.id),
+        name=food.name,
+        calories=food.calories,
+        timestamp=datetime.utcnow(),
+    )
+    await food_doc.insert()
+    return {"message": "Food logged", "food": food_doc}
+
+
+@app.get("/food", response_model=List[FoodItem])
+async def get_food(user: User = Depends(get_current_user)):
+    return await FoodItem.find(FoodItem.user_id == str(user.id)).to_list()
+
+
+@app.delete("/food/{food_id}")
+async def delete_food(food_id: str, user: User = Depends(get_current_user)):
+    food = await FoodItem.get(PydanticObjectId(food_id))
+    if not food or food.user_id != str(user.id):
+        raise HTTPException(status_code=404, detail="Food not found")
+    await food.delete()
+    return {"message": "Food deleted"}
