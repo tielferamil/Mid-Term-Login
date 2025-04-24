@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Body
+from fastapi import FastAPI, Depends, HTTPException, applications, status, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from beanie import PydanticObjectId
@@ -14,6 +14,7 @@ from models import User, FoodItem
 from database import init_db
 from typing import List
 from datetime import datetime
+from fastapi.staticfiles import StaticFiles
 
 
 class FoodInput(BaseModel):
@@ -22,6 +23,7 @@ class FoodInput(BaseModel):
 
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)

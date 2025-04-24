@@ -24,6 +24,8 @@
     </div>
 
     <div id="appSection" style="display: none;">
+        <button onclick="logout()">Sign Out</button>
+
         <form id="calorieForm">
             <input type="number" id="calorieTarget" placeholder="Daily Calorie Target" required />
         </form>
@@ -42,6 +44,7 @@
     <script>
         const apiUrl = "http://localhost:8000";
         let token = localStorage.getItem("token") || null;
+        let editingFoodId = null;
 
         if (token) {
             document.getElementById("authSection").style.display = "none";
@@ -84,16 +87,46 @@
             }
         }
 
+        function logout() {
+            localStorage.removeItem("token");
+            token = null;
+            document.getElementById("authSection").style.display = "block";
+            document.getElementById("appSection").style.display = "none";
+        }
+
         async function fetchFoods() {
             const res = await fetch(apiUrl + "/food", {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
+
+            if (res.status === 401) {
+                alert("Session expired. Please log in again.");
+                localStorage.removeItem("token");
+                location.reload();
+                return;
+            }
+
             const foods = await res.json();
             const foodList = document.getElementById("foodList");
             foodList.innerHTML = "";
             foods.forEach(food => {
                 const li = document.createElement("li");
-                li.textContent = `${food.name} - ${food.calories} cal`;
+                li.textContent = `${food.name} - ${food.calories} cal `;
+
+                const editBtn = document.createElement("button");
+                editBtn.textContent = "Edit";
+                editBtn.onclick = () => {
+                    document.getElementById("foodName").value = food.name;
+                    document.getElementById("foodCalories").value = food.calories;
+                    editingFoodId = food._id;
+                };
+
+                const deleteBtn = document.createElement("button");
+                deleteBtn.textContent = "Delete";
+                deleteBtn.onclick = () => deleteFood(food._id);
+
+                li.appendChild(editBtn);
+                li.appendChild(deleteBtn);
                 foodList.appendChild(li);
             });
         }
@@ -101,15 +134,44 @@
         async function logFood() {
             const name = document.getElementById("foodName").value;
             const calories = parseInt(document.getElementById("foodCalories").value);
-            await fetch(apiUrl + "/food", {
-                method: "POST",
+
+            const endpoint = editingFoodId ? `/food/${editingFoodId}` : "/food";
+            const method = editingFoodId ? "PUT" : "POST";
+
+            const res = await fetch(apiUrl + endpoint, {
+                method: method,
                 headers: {
                     'Authorization': `Bearer ${token}`,
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({ name, calories })
             });
+
+            if (res.status === 401) {
+                alert("Session expired. Please log in again.");
+                localStorage.removeItem("token");
+                location.reload();
+                return;
+            }
+
+            editingFoodId = null;
             document.getElementById("foodForm").reset();
+            fetchFoods();
+        }
+
+        async function deleteFood(id) {
+            const res = await fetch(apiUrl + "/food/" + id, {
+                method: "DELETE",
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (res.status === 401) {
+                alert("Session expired. Please log in again.");
+                localStorage.removeItem("token");
+                location.reload();
+                return;
+            }
+
             fetchFoods();
         }
     </script>
